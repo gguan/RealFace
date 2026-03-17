@@ -68,11 +68,23 @@ def load_image(path: Union[str, np.ndarray, Image.Image]) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
-def preprocess_for_mica(image: np.ndarray) -> np.ndarray:
+def preprocess_for_mica(
+    image: np.ndarray,
+    detector: Optional["FaceDetector"] = None,
+) -> np.ndarray:
     """
-    MICA input preprocessing: align crop -> (112, 112, 3) -> normalize to [-1, 1].
-    Returns float32 numpy array.
+    MICA input preprocessing: align crop → (112, 112, 3) → normalize to [-1, 1]
+    Returns float32 numpy array. If detector is None, creates a temporary one (slow).
     """
-    detector = FaceDetector()
-    aligned, _ = detector.align_crop(image, size=112)
-    return (aligned.astype(np.float32) / 127.5) - 1.0
+    if detector is None:
+        detector = FaceDetector()
+    aligned, confidence = detector.align_crop(image, size=112)
+    if aligned is None:
+        # Fallback: just resize if no face detected
+        aligned = cv2.resize(image, (112, 112))
+    img = aligned.astype(np.float32)
+    return (img / 127.5) - 1.0
+
+
+# Alias for plan compatibility
+preprocess_image = preprocess_for_mica

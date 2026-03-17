@@ -11,7 +11,7 @@ class LandmarkDetector:
         import face_alignment
 
         # Use 'cpu' string even on MPS — face_alignment MPS support is limited
-        self.fa = face_alignment.FaceAlignment(
+        self._fa = face_alignment.FaceAlignment(
             face_alignment.LandmarksType.TWO_D,
             flip_input=False,
             device="cpu",
@@ -28,7 +28,7 @@ class LandmarkDetector:
         normalize=False: pixel coordinates
         shape: (68, 2)
         """
-        landmarks = self.fa.get_landmarks_from_image(image)
+        landmarks = self._fa.get_landmarks_from_image(image)
         if landmarks is None or len(landmarks) == 0:
             raise ValueError("No landmarks detected in image")
         # Take first face, first two columns (x, y)

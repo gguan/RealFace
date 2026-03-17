@@ -6,17 +6,16 @@ from pathlib import Path
 
 
 def save_mesh(
+    path: str,
     vertices: np.ndarray,  # (V, 3)
     faces: np.ndarray,     # (F, 3)
-    path: str,
     format: str = "ply",   # "ply" | "obj"
 ) -> str:
-    """Save mesh, return actual saved path."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Save mesh to path, returns path. Creates parent dirs automatically."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
-    mesh.export(str(path))
-    return str(path)
+    mesh.export(path)
+    return path
 
 
 def load_mesh(path: str) -> tuple:
