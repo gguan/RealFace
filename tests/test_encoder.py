@@ -188,3 +188,98 @@ def test_encoder_init_no_crash_missing_weights():
             pytest.skip(f"InsightFace not available: {e}")
         else:
             raise
+
+
+# ── MultiImageAggregator tests ─────────────────────────────────────────
+
+
+@pytest.fixture
+def mock_aggregator():
+    """MultiImageAggregator with a deterministic mock encoder."""
+    from faceforge.encoder.multi_image import MultiImageAggregator
+
+    mock_enc = MagicMock()
+    call_count = {"n": 0}
+
+    def encode_side_effect(img):
+        call_count["n"] += 1
+        # Each call returns a slightly different shape vector
+        return torch.full((1, 300), float(call_count["n"]) * 0.1)
+
+    mock_enc.encode.side_effect = encode_side_effect
+    return MultiImageAggregator(mock_enc, strategy="median")
+
+
+def test_aggregate_result_fields(mock_aggregator):
+    from faceforge.encoder.multi_image import AggregationResult
+    imgs = [np.zeros((64, 64, 3), dtype=np.uint8) for _ in range(3)]
+    result = mock_aggregator.aggregate(imgs)
+    assert isinstance(result, AggregationResult)
+    assert result.shape_params.shape == (1, 300)
+    assert result.per_image_shapes.shape == (3, 300)
+    assert 0.0 <= result.confidence <= 1.0
+    assert result.n_valid_images == 3
+
+
+def test_aggregate_skips_failed_detections():
+    from faceforge.encoder.multi_image import MultiImageAggregator
+    mock_enc = MagicMock()
+    # First image fails, second succeeds
+    mock_enc.encode.side_effect = [
+        ValueError("No face detected in image"),
+        torch.zeros(1, 300),
+    ]
+    agg = MultiImageAggregator(mock_enc)
+    imgs = [np.zeros((64, 64, 3), dtype=np.uint8) for _ in range(2)]
+    result = agg.aggregate(imgs)
+    assert result.n_valid_images == 1
+    assert result.shape_params.shape == (1, 300)
+
+
+def test_aggregate_all_fail_raises():
+    from faceforge.encoder.multi_image import MultiImageAggregator
+    mock_enc = MagicMock()
+    mock_enc.encode.side_effect = ValueError("No face detected in image")
+    agg = MultiImageAggregator(mock_enc)
+    with pytest.raises(ValueError, match="No faces detected"):
+        agg.aggregate([np.zeros((64, 64, 3), dtype=np.uint8)])
+
+
+def test_aggregate_median_value():
+    """Median of [0.1, 0.2, 0.3] tensors should be ~0.2"""
+    from faceforge.encoder.multi_image import MultiImageAggregator
+    mock_enc = MagicMock()
+    mock_enc.encode.side_effect = [
+        torch.full((1, 300), 0.1),
+        torch.full((1, 300), 0.2),
+        torch.full((1, 300), 0.3),
+    ]
+    agg = MultiImageAggregator(mock_enc, strategy="median")
+    result = agg.aggregate([None, None, None])
+    assert abs(result.shape_params.mean().item() - 0.2) < 1e-5
+
+
+def test_aggregate_identical_images_high_confidence():
+    """Same prediction across images should give confidence close to 1.0"""
+    from faceforge.encoder.multi_image import MultiImageAggregator
+    mock_enc = MagicMock()
+    mock_enc.encode.return_value = torch.ones(1, 300)
+    agg = MultiImageAggregator(mock_enc)
+    result = agg.aggregate([None, None, None])
+    assert result.confidence > 0.99
+
+
+def test_trimmed_mean_removes_outliers():
+    from faceforge.encoder.multi_image import MultiImageAggregator
+    mock_enc = MagicMock()
+    mock_enc.encode.side_effect = [
+        torch.full((1, 300), 0.0),   # outlier low
+        torch.full((1, 300), 0.5),
+        torch.full((1, 300), 0.5),
+        torch.full((1, 300), 0.5),
+        torch.full((1, 300), 10.0),  # outlier high
+    ]
+    agg = MultiImageAggregator(mock_enc, strategy="trimmed_mean")
+    result = agg.aggregate([None] * 5)
+    # After trimming outliers, should be close to 0.5
+    assert abs(result.shape_params.mean().item() - 0.5) < 0.1
