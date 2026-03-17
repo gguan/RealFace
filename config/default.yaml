@@ -1,0 +1,33 @@
+device: auto              # auto | cuda | mps | cpu
+
+paths:
+  flame_model:   data/pretrained/FLAME2020/generic_model.pkl
+  flame_masks:   data/pretrained/FLAME2020/FLAME_masks.pkl
+  mica_weights:  data/pretrained/mica.tar
+
+encoder:
+  insightface_name: buffalo_l
+  image_size: 112
+
+aggregator:
+  strategy: median           # median | mean | trimmed_mean
+  min_confidence: 0.7
+
+refiner:
+  enabled: true
+  n_steps: 100
+  lr: 0.001
+  render_size: 512
+  losses:
+    landmark:    1.0
+    photometric: 0.5
+    identity:    0.3
+    contour:     0.5
+    region:      0.8
+    regularize:  0.1
+
+output:
+  save_mesh:   true
+  save_render: true
+  save_params: true
+  mesh_format: ply           # ply | obj

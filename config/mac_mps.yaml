@@ -1,0 +1,9 @@
+# Inherits default.yaml, overrides Mac-specific settings only
+device: mps
+
+refiner:
+  n_steps: 80
+  render_size: 256
+  lr: 0.001
+
+# Note: PyTorch3D rasterizer ops auto fallback to CPU on MPS (handled in renderer.py)
