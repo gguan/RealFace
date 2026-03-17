@@ -33,6 +33,8 @@ def test_render_returns_correct_shape_without_p3d():
     faces = torch.randint(0, V, (F, 3))
     out = r.render(verts, faces, cameras=None)
     assert out.image.shape == (B, 64, 64, 4)
+    assert out.zbuf.shape == (B, 64, 64, 1)
+    assert out.pix_to_face.shape == (B, 64, 64, 1)
 
 
 def test_extract_face_mask():

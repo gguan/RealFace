@@ -79,7 +79,7 @@ class DifferentiableRenderer:
         self,
         vertices:      torch.Tensor,           # (B, V, 3)
         faces:         torch.Tensor,           # (F, 3)
-        cameras,                               # PerspectiveCameras or similar
+        cameras=None,                          # PerspectiveCameras or None (returns dummy when None)
         lights:        Optional = None,
         vertex_colors: Optional[torch.Tensor] = None,  # (B, V, 3)
     ) -> RenderOutput:
@@ -145,19 +145,19 @@ class DifferentiableRenderer:
             return None
 
         # cam_params: (B, 3) = [scale, tx, ty]
-        scale = cam_params[:, 0:1]  # (B, 1)
-        tx = cam_params[:, 1:2]
-        ty = cam_params[:, 2:3]
+        scale = cam_params[:, 0]   # (B,) — one per image
+        tx    = cam_params[:, 1]
+        ty    = cam_params[:, 2]
 
         cameras = FoVOrthographicCameras(
             device=self._raster_device,
             znear=0.001,
             zfar=10.0,
-            max_y=1.0 / scale.mean().item(),
-            min_y=-1.0 / scale.mean().item(),
-            max_x=1.0 / scale.mean().item(),
-            min_x=-1.0 / scale.mean().item(),
-            T=torch.cat([tx, ty, torch.ones_like(tx)], dim=1),
+            max_y=1.0 / scale,
+            min_y=-1.0 / scale,
+            max_x=1.0 / scale,
+            min_x=-1.0 / scale,
+            T=torch.stack([tx, ty, torch.ones_like(tx)], dim=1),
         )
         return cameras
 
