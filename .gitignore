@@ -25,3 +25,4 @@ data/pretrained/
 
 # OS
 .DS_Store
+.worktrees/
