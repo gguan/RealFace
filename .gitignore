@@ -1,0 +1,27 @@
+# Worktrees
+.worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.env
+.venv
+env/
+venv/
+
+# Output / data
+output/
+data/pretrained/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
