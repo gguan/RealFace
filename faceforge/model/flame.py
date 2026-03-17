@@ -73,8 +73,6 @@ class FLAMELayer(nn.Module):
 
     def __init__(self, flame_model_path: str, device=None):
         super().__init__()
-        from faceforge.utils.device import get_device
-        self.device_ref = device or get_device()
 
         if Path(flame_model_path).exists():
             self._load_from_file(flame_model_path)
@@ -181,7 +179,16 @@ class FLAMELayer(nn.Module):
         1. Shape blend: v = v_template + shape_dirs @ shape_params
         2. Expression blend: v += expr_dirs @ expr_params
         3. Project landmarks
+
+        Note: pose_params is accepted for API compatibility but not applied in this
+        implementation. Shape-only optimization is the primary use case.
+        Pass torch.zeros(B, 6) for pose.
         """
+        assert shape_params.shape[-1] == self.SHAPE_DIM, \
+            f"Expected shape_params dim {self.SHAPE_DIM}, got {shape_params.shape[-1]}"
+        assert expression_params.shape[-1] == self.EXPR_DIM, \
+            f"Expected expression_params dim {self.EXPR_DIM}, got {expression_params.shape[-1]}"
+
         B = shape_params.shape[0]
         V = self.v_template.shape[0]
 
