@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import pytest
+from unittest.mock import MagicMock
 from faceforge.optimizer.losses import (
     LossWeights,
     landmark_loss,
@@ -139,3 +140,43 @@ def test_region_loss_backward():
     ref  = torch.rand(1, 5023, 3)
     loss_fn(pred, ref).backward()
     assert pred.grad is not None
+
+
+def test_identity_loss_preprocess_shape():
+    """_preprocess must return (B, 3, 112, 112) in [-1, 1]."""
+    from faceforge.optimizer.losses import IdentityLoss
+    loss_fn = IdentityLoss(arcface_model=MagicMock())
+    img = torch.rand(2, 64, 64, 3)  # BHWC [0,1]
+    out = loss_fn._preprocess(img)
+    assert out.shape == (2, 3, 112, 112)
+    assert out.min().item() >= -1.0 - 1e-5
+    assert out.max().item() <= 1.0 + 1e-5
+
+
+def test_identity_loss_forward_shape():
+    """IdentityLoss.forward must return a scalar loss in [0, 2]."""
+    from faceforge.optimizer.losses import IdentityLoss
+    # Mock arcface returns unit embeddings
+    mock_arcface = MagicMock()
+    mock_arcface.return_value = torch.nn.functional.normalize(
+        torch.rand(2, 512), dim=1
+    )
+    loss_fn = IdentityLoss(arcface_model=mock_arcface)
+    rendered = torch.rand(2, 64, 64, 3)
+    target   = torch.rand(2, 64, 64, 3)
+    loss = loss_fn(rendered, target)
+    assert loss.dim() == 0  # scalar
+    assert -1e-5 <= loss.item() <= 2.0
+
+
+def test_identity_loss_zero_when_identical():
+    """Loss = 0 when rendered == target (embeddings are identical)."""
+    from faceforge.optimizer.losses import IdentityLoss
+    mock_arcface = MagicMock()
+    emb = torch.nn.functional.normalize(torch.rand(1, 512), dim=1)
+    mock_arcface.return_value = emb
+    loss_fn = IdentityLoss(arcface_model=mock_arcface)
+    img = torch.rand(1, 64, 64, 3)
+    loss = loss_fn(img, img)
+    # Same embedding → cosine_sim = 1 → loss = 0
+    assert loss.item() == pytest.approx(0.0, abs=1e-5)

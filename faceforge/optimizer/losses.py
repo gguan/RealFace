@@ -12,7 +12,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LossWeights:
     landmark:    float = 1.0
     photometric: float = 0.5
@@ -27,7 +27,7 @@ def landmark_loss(
     projected_lmk: torch.Tensor,   # (B, 68, 2) projected 2D coords (normalized [-1,1])
     target_lmk:    torch.Tensor,   # (B, 68, 2) detected 2D coords (normalized)
 ) -> torch.Tensor:
-    """L2 mean distance between projected and detected landmarks."""
+    """Mean squared error (MSE) between projected and detected 2D landmark coordinates."""
     return F.mse_loss(projected_lmk, target_lmk)
 
 
@@ -41,6 +41,9 @@ def photometric_loss(
     L1 pixel difference, computed only within skin_mask region.
     Excludes eyes, mouth interior, hair to avoid incorrect gradients.
     """
+    if skin_mask.sum() == 0:
+        logger.warning("[photometric_loss] skin_mask is empty — loss will be 0. Check mask computation.")
+        return torch.tensor(0.0, device=rendered.device, requires_grad=rendered.requires_grad)
     mask = skin_mask.unsqueeze(-1).float()
     if rendered.shape[-1] == 4:
         rendered = rendered[..., :3]  # drop alpha if RGBA
@@ -108,6 +111,9 @@ def extract_face_contour(
     """
     Extract ~n_points contour points from face segmentation mask using Canny edges.
     Uniformly subsamples the edge points to n_points.
+
+    Note: Uses OpenCV Canny (non-differentiable). Returns a detached tensor.
+    Gradients flow through contour_loss, not through this function.
     """
     import cv2
     import numpy as np
@@ -141,15 +147,6 @@ REGION_WEIGHTS = {
     "forehead": 0.5,
 }
 
-REGION_VERTEX_IDS: dict = {
-    "nose": None,     # loaded from FLAME_masks.pkl
-    "eyes": None,
-    "mouth": None,
-    "jaw": None,
-    "cheeks": None,
-    "forehead": None,
-}
-
 
 class RegionWeightedLoss(nn.Module):
     """
@@ -161,6 +158,7 @@ class RegionWeightedLoss(nn.Module):
     def __init__(self, flame_masks_path: str):
         super().__init__()
         self._region_ids = {}
+        self._region_tensors = {}
         self._load_masks(flame_masks_path)
 
     def _load_masks(self, path: str) -> None:
@@ -192,6 +190,10 @@ class RegionWeightedLoss(nn.Module):
                         indices.extend(list(v))
             if indices:
                 self._region_ids[region] = list(set(indices))
+        self._region_tensors = {
+            region: torch.tensor(ids, dtype=torch.long)
+            for region, ids in self._region_ids.items()
+        }
 
     def forward(
         self,
@@ -209,7 +211,7 @@ class RegionWeightedLoss(nn.Module):
             ids = self._region_ids.get(region)
             if ids is None:
                 continue
-            idx = torch.tensor(ids, dtype=torch.long, device=pred_vertices.device)
+            idx = self._region_tensors[region].to(pred_vertices.device)
             diff = (pred_vertices[:, idx] - ref_vertices[:, idx]).pow(2).mean()
             total = total + weight * diff
             total_weight += weight
