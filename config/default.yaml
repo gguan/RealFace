@@ -6,7 +6,7 @@ paths:
   mica_weights:  data/pretrained/mica.tar
 
 encoder:
-  insightface_name: buffalo_l
+  insightface_name: antelopev2
   image_size: 112
 
 aggregator:

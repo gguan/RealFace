@@ -7,7 +7,7 @@ import cv2
 
 
 class FaceDetector:
-    def __init__(self, model_name: str = "buffalo_l"):
+    def __init__(self, model_name: str = "antelopev2"):
         """Load InsightFace detector (auto-downloads on first run)."""
         import insightface
         from insightface.app import FaceAnalysis

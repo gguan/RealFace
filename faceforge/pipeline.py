@@ -46,7 +46,8 @@ class FaceForgePipeline:
 
         logger.info(f"[Pipeline] Initializing on device: {self.device}")
         self.encoder = MICAEncoder(
-            config.paths.mica_weights, config.paths.flame_model, self.device
+            config.paths.mica_weights, config.paths.flame_model, self.device,
+            insightface_name=config.encoder.insightface_name,
         )
         self.aggregator = MultiImageAggregator(
             self.encoder, config.aggregator.strategy
@@ -67,7 +68,7 @@ class FaceForgePipeline:
             flame=self.flame,
             renderer=self.renderer,
             lmk_detector=LandmarkDetector(self.device),
-            face_detector=FaceDetector(),
+            face_detector=FaceDetector(model_name=config.encoder.insightface_name),
             loss_weights=lw,
             device=self.device,
         )
