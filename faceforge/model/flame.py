@@ -92,6 +92,9 @@ class FLAMELayer(nn.Module):
             torch.tensor(FLAME_CONTOUR_INDICES, dtype=torch.long),
         )
 
+        if device is not None:
+            self.to(device)
+
     # ------------------------------------------------------------------
     # Initialisation helpers
     # ------------------------------------------------------------------
@@ -196,14 +199,14 @@ class FLAMELayer(nn.Module):
         sd = self.shape_dirs.reshape(V * 3, -1)   # (V*3, 300)
         ed = self.expr_dirs.reshape(V * 3, -1)    # (V*3, 50)
 
-        # 1. Shape blend
+        # 1. Shape blend  (shape_params @ sd.T -> (B, V*3))
         v_shaped = self.v_template.unsqueeze(0) + (
-            torch.einsum("vd,bd->bv", sd, shape_params).reshape(B, V, 3)
+            (shape_params @ sd.T).reshape(B, V, 3)
         )
 
         # 2. Expression blend
         v_shaped = v_shaped + (
-            torch.einsum("vd,bd->bv", ed, expression_params).reshape(B, V, 3)
+            (expression_params @ ed.T).reshape(B, V, 3)
         )
 
         vertices = v_shaped  # (B, V, 3)

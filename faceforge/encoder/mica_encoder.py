@@ -18,20 +18,36 @@ logger = logging.getLogger(__name__)
 
 
 class MappingNetwork(nn.Module):
-    """Maps 512-dim ArcFace embedding to 300-dim FLAME shape coefficients."""
+    """Maps 512-dim ArcFace embedding to 300-dim FLAME shape coefficients.
+
+    Architecture matches the MICA checkpoint regressor:
+      network: Linear(512,300) x4  +  output: Linear(300,300)
+    Keys: regressor.network.{0-3}.{weight,bias}, regressor.output.{weight,bias}
+    """
 
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(512, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 300),
-        )
+        self.regressor = _MICARegressor()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        return self.regressor(x)
+
+
+class _MICARegressor(nn.Module):
+    """Internal regressor matching MICA checkpoint layout."""
+
+    def __init__(self):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(512, 300),
+            nn.Linear(300, 300),
+            nn.Linear(300, 300),
+            nn.Linear(300, 300),
+        )
+        self.output = nn.Linear(300, 300)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.output(self.network(x))
 
 
 class MICAEncoder:
@@ -80,27 +96,19 @@ class MICAEncoder:
         logger.info(f"[MICAEncoder] Initialized on {self.device}")
 
     def _load_weights(self, path: Path):
-        """Load MICA checkpoint from .tar file."""
-        import tarfile
-        import tempfile
-
+        """Load MICA checkpoint (PyTorch ZIP format, saved with torch.save)."""
         try:
-            with tarfile.open(str(path), "r") as tar:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tar.extractall(tmpdir)
-                    pth_files = list(Path(tmpdir).rglob("*.pth"))
-                    if pth_files:
-                        state = torch.load(str(pth_files[0]), map_location=self.device)
-                        # Try different checkpoint formats
-                        if "state_dict" in state:
-                            self._mapping.load_state_dict(state["state_dict"], strict=False)
-                        elif "mapping" in state:
-                            self._mapping.load_state_dict(state["mapping"], strict=False)
-                        else:
-                            self._mapping.load_state_dict(state, strict=False)
-                        logger.info(f"[MICAEncoder] Loaded weights from {pth_files[0].name}")
-                    else:
-                        logger.warning(f"[MICAEncoder] No .pth files found inside {path}")
+            ckpt = torch.load(str(path), map_location=self.device, weights_only=False)
+            # MICA checkpoint has flameModel.regressor.* keys
+            if "flameModel" in ckpt:
+                self._mapping.regressor.load_state_dict(ckpt["flameModel"], strict=False)
+                logger.info(f"[MICAEncoder] Loaded weights from {path.name} (flameModel)")
+            elif "state_dict" in ckpt:
+                self._mapping.load_state_dict(ckpt["state_dict"], strict=False)
+                logger.info(f"[MICAEncoder] Loaded weights from {path.name} (state_dict)")
+            else:
+                self._mapping.load_state_dict(ckpt, strict=False)
+                logger.info(f"[MICAEncoder] Loaded weights from {path.name}")
         except Exception as e:
             logger.warning(f"[MICAEncoder] Failed to load weights: {e}")
 

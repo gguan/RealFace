@@ -84,7 +84,7 @@ class DifferentiableRenderer:
         vertex_colors: Optional[torch.Tensor] = None,  # (B, V, 3)
     ) -> RenderOutput:
         """Differentiable render, returns RGBA image."""
-        if not HAS_PYTORCH3D:
+        if not HAS_PYTORCH3D or cameras is None:
             B = vertices.shape[0]
             H = W = self.image_size
             return RenderOutput(

@@ -47,7 +47,7 @@ print("\n-- Config / Utils --")
 failures += not check("omegaconf", lambda: __import__("omegaconf").__version__)
 failures += not check("loguru", lambda: __import__("loguru").__version__)
 failures += not check("tqdm", lambda: __import__("tqdm").__version__)
-failures += not check("rich", lambda: __import__("rich").__version__)
+failures += not check("rich", lambda: __import__("importlib.metadata", fromlist=["version"]).version("rich"))
 
 print("\n-- FaceForge package --")
 failures += not check("faceforge", lambda: __import__("faceforge").__version__)

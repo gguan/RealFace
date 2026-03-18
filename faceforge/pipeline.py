@@ -112,10 +112,13 @@ class FaceForgePipeline:
         # Refinement
         loss_final = 0.0
         if self.config.refiner.enabled:
-            # Use first image as primary reference
+            # Use first image as primary reference, resized to render_size
+            import cv2 as _cv2
+            render_size = self.config.refiner.render_size
+            img_resized = _cv2.resize(loaded[0], (render_size, render_size))
             img_tensor = torch.from_numpy(
-                loaded[0].astype(np.float32) / 255.0
-            ).unsqueeze(0).to(self.device)  # (1, H, W, 3)
+                img_resized.astype(np.float32) / 255.0
+            ).unsqueeze(0).to(self.device)  # (1, render_size, render_size, 3)
 
             cam_params = torch.tensor([[1.0, 0.0, 0.0]], device=self.device)
 
