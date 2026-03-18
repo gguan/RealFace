@@ -47,18 +47,27 @@ class MultiImageAggregator:
         1. For each image call encoder.encode() — skip (with warning) if ValueError
         2. Aggregate according to strategy
         3. Compute confidence = mean pairwise cosine similarity across predictions
-        4. If confidence < min_confidence: print warning
+        4. If confidence < min_confidence: log warning via logger.warning
         """
         if not images:
             raise ValueError("At least one image is required")
 
+        if weights is not None:
+            if len(weights) != len(images):
+                raise ValueError(
+                    f"weights length ({len(weights)}) must match images length ({len(images)})"
+                )
+
         # Encode each image, skip failures with warning
         valid_shapes = []
+        valid_weights = []
         n_valid = 0
         for i, img in enumerate(images):
             try:
                 shape = self._encoder.encode(img)  # (1, 300)
                 valid_shapes.append(shape)
+                if weights is not None:
+                    valid_weights.append(weights[i])
                 n_valid += 1
             except ValueError as e:
                 logger.warning(f"[MultiImageAggregator] Skipping image {i}: {e}")
@@ -73,8 +82,8 @@ class MultiImageAggregator:
         if self._strategy == "median":
             aggregated = self._median(all_shapes)
         elif self._strategy == "mean":
-            if weights and len(weights) == n_valid:
-                w = torch.tensor(weights, dtype=torch.float32, device=all_shapes.device)
+            if valid_weights:
+                w = torch.tensor(valid_weights, dtype=torch.float32, device=all_shapes.device)
                 w = w / w.sum()
                 aggregated = (all_shapes * w.unsqueeze(1)).sum(0, keepdim=True)
             else:
@@ -105,11 +114,14 @@ class MultiImageAggregator:
         return torch.median(shapes, dim=0).values.unsqueeze(0)
 
     def _trimmed_mean(self, shapes: torch.Tensor, trim: float = 0.2) -> torch.Tensor:
-        """Remove top/bottom trim fraction then average"""
+        """Per-dimension order-statistic filter: sort each coefficient independently,
+        drop the extreme values, and average the remainder."""
         N = shapes.shape[0]
         if N <= 2:
             return shapes.mean(0, keepdim=True)
         n_trim = max(1, int(N * trim))
+        if 2 * n_trim >= N:
+            return shapes.mean(0, keepdim=True)
         # Sort per dimension, trim top/bottom
         sorted_shapes, _ = torch.sort(shapes, dim=0)
         trimmed = sorted_shapes[n_trim: N - n_trim]
