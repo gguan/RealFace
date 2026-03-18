@@ -39,44 +39,55 @@ class MultiImageAggregator:
 
     def aggregate(
         self,
-        images: List[Union[str, np.ndarray]],
+        images: Union[List[Union[str, np.ndarray]], torch.Tensor],
         weights: Optional[List[float]] = None,
     ) -> AggregationResult:
-        """
+        """Aggregate per-image shape predictions into a single robust estimate.
+
+        ``images`` may be:
+        - A list of image paths / numpy arrays: shapes are computed via the encoder.
+        - A ``torch.Tensor`` of shape ``(N, 300)``: pre-computed codes, skips encoding.
+
         Steps:
         1. For each image call encoder.encode() — skip (with warning) if ValueError
         2. Aggregate according to strategy
         3. Compute confidence = mean pairwise cosine similarity across predictions
         4. If confidence < min_confidence: log warning via logger.warning
         """
-        if not images:
-            raise ValueError("At least one image is required")
+        # Fast path: pre-computed shape tensor supplied directly
+        if isinstance(images, torch.Tensor):
+            all_shapes = images  # (N, 300)
+            n_valid = all_shapes.shape[0]
+        else:
+            if not images:
+                raise ValueError("At least one image is required")
 
-        if weights is not None:
-            if len(weights) != len(images):
-                raise ValueError(
-                    f"weights length ({len(weights)}) must match images length ({len(images)})"
-                )
+            if weights is not None:
+                if len(weights) != len(images):
+                    raise ValueError(
+                        f"weights length ({len(weights)}) must match images length ({len(images)})"
+                    )
 
-        # Encode each image, skip failures with warning
-        valid_shapes = []
-        valid_weights = []
-        n_valid = 0
-        for i, img in enumerate(images):
-            try:
-                shape = self._encoder.encode(img)  # (1, 300)
-                valid_shapes.append(shape)
-                if weights is not None:
-                    valid_weights.append(weights[i])
-                n_valid += 1
-            except ValueError as e:
-                logger.warning(f"[MultiImageAggregator] Skipping image {i}: {e}")
+            # Encode each image, skip failures with warning
+            valid_shapes = []
+            valid_weights = []
+            n_valid = 0
+            for i, img in enumerate(images):
+                try:
+                    shape = self._encoder.encode(img)  # (1, 300)
+                    valid_shapes.append(shape)
+                    if weights is not None:
+                        valid_weights.append(weights[i])
+                    n_valid += 1
+                except ValueError as e:
+                    logger.warning(f"[MultiImageAggregator] Skipping image {i}: {e}")
 
-        if not valid_shapes:
-            raise ValueError("No faces detected in any of the provided images")
+            if not valid_shapes:
+                raise ValueError("No faces detected in any of the provided images")
 
-        # Stack to (N, 300)
-        all_shapes = torch.cat(valid_shapes, dim=0)  # (N, 300)
+            # Stack to (N, 300)
+            all_shapes = torch.cat(valid_shapes, dim=0)  # (N, 300)
+            weights = valid_weights if valid_weights else weights
 
         # Aggregate
         if self._strategy == "median":

@@ -1,5 +1,13 @@
 """
 FaceForge pipeline — orchestrates the full face reconstruction workflow.
+
+High-level flow
+---------------
+1. Canonical preprocessing  (CanonicalPreprocessor) — detect + align per image
+2. MICA encoding             (MICAAdapter)           — shape code per aligned image
+3. Multi-image aggregation   (MultiImageAggregator)  — robust shape estimate
+4. ShapeRefiner              (ShapeRefiner)          — differentiable refinement
+5. Export                                            — mesh / params / renders
 """
 
 from dataclasses import dataclass
@@ -7,8 +15,8 @@ from typing import Union, List, Optional
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 from loguru import logger
+from omegaconf import OmegaConf
 
 
 @dataclass
@@ -23,11 +31,7 @@ class PipelineResult:
 
 class FaceForgePipeline:
     """
-    Full pipeline:
-    1. Image preprocessing (face detection + alignment)
-    2. MICA encoding (single or multi-image median aggregation)
-    3. ShapeRefiner optimization (optional, default on)
-    4. Output: mesh / render preview / params
+    Full reconstruction pipeline.
     """
 
     def __init__(self, config: OmegaConf):
@@ -40,11 +44,15 @@ class FaceForgePipeline:
         from faceforge.optimizer.losses import LossWeights
         from faceforge.utils.landmarks import LandmarkDetector
         from faceforge.utils.image import FaceDetector
+        from faceforge.preprocess.stage import CanonicalPreprocessor
+        from faceforge.encoder.mica_adapter import MICAAdapter
 
         dev_str = str(getattr(config, "device", "auto"))
         self.device = get_device() if dev_str == "auto" else torch.device(dev_str)
 
         logger.info(f"[Pipeline] Initializing on device: {self.device}")
+
+        # Legacy encoder (kept for backward compatibility)
         self.encoder = MICAEncoder(
             config.paths.mica_weights, config.paths.flame_model, self.device,
             insightface_name=config.encoder.insightface_name,
@@ -72,6 +80,11 @@ class FaceForgePipeline:
             loss_weights=lw,
             device=self.device,
         )
+
+        # NEW: canonical preprocessing stage and thin MICA adapter
+        self.preprocessor = CanonicalPreprocessor(config, self.device)
+        self.mica = MICAAdapter(config, self.device)
+
         self.config = config
 
     def run(
@@ -80,18 +93,11 @@ class FaceForgePipeline:
         output_dir: str = "output",
         subject_id: str = "subject",
     ) -> PipelineResult:
-        """
-        Full pipeline flow:
-        1. Normalize images to list
-        2. Multi-image aggregation -> shape_init
-        3. If refiner.enabled: ShapeRefiner.refine()
-        4. FLAMELayer.forward() to get final mesh
-        5. Save mesh / render / params to output_dir
-        6. Return PipelineResult
-        """
+        """Full pipeline: preprocess → MICA encode → aggregate → refine → export."""
         from pathlib import Path
         from faceforge.utils.image import load_image
         from faceforge.utils.mesh_io import save_mesh
+        from faceforge.utils.artifacts import ArtifactWriter
 
         # Normalize to list
         if not isinstance(images, list):
@@ -100,16 +106,42 @@ class FaceForgePipeline:
         # Load all images
         loaded = [load_image(img) for img in images]
 
-        logger.info(f"[Pipeline] Encoding {len(loaded)} image(s)...")
+        logger.info(
+            f"[Pipeline] Processing {len(loaded)} image(s) for subject '{subject_id}'"
+        )
 
-        # Aggregate shape params
-        agg_result = self.aggregator.aggregate(loaded)
+        # Artifact writer (no-op when save_intermediates=False)
+        save_intermediates = bool(
+            getattr(self.config.output, "save_intermediates", False)
+        )
+        artifacts = ArtifactWriter(output_dir, subject_id, enabled=save_intermediates)
+        artifacts.ensure_stage_dirs()
+
+        # Stage 1: Canonical preprocessing + MICA encoding per image
+        all_shape_codes = []
+        for i, img in enumerate(loaded):
+            artifacts.save_input(img, name=f"input_{i:03d}.png")
+            pre_result = self.preprocessor.run(img)
+            artifacts.save_aligned(pre_result.aligned_image, name=f"aligned_{i:03d}.png")
+            artifacts.save_landmark_preview(pre_result.preview_image, name=f"landmarks_{i:03d}.png")
+            mica_result = self.mica.run(pre_result)
+            artifacts.save_mica_preview(
+                pre_result.aligned_image, name=f"mica_preview_{i:03d}.png"
+            )
+            all_shape_codes.append(mica_result.shape_code)
+
+        # Stage 2: Multi-image aggregation — pass pre-computed (N, 300) tensor
+        stacked_shapes = torch.cat(all_shape_codes, dim=0)  # (N, 300)
+        agg_result = self.aggregator.aggregate(stacked_shapes)
         shape_init = agg_result.shape_params  # (1, 300)
         confidence = agg_result.confidence
 
-        logger.info(f"[Pipeline] Confidence: {confidence:.3f}, valid images: {agg_result.n_valid_images}")
+        logger.info(
+            f"[Pipeline] Confidence: {confidence:.3f}, "
+            f"valid images: {agg_result.n_valid_images}"
+        )
 
-        # Refinement
+        # Stage 3: Optional refinement
         loss_final = 0.0
         if self.config.refiner.enabled:
             # Use first image as primary reference, resized to render_size
@@ -131,16 +163,18 @@ class FaceForgePipeline:
                 verbose=True,
             )
             shape_final = refine_result.shape_params
-            loss_final = refine_result.loss_history[-1] if refine_result.loss_history else 0.0
+            loss_final = (
+                refine_result.loss_history[-1] if refine_result.loss_history else 0.0
+            )
         else:
             shape_final = shape_init
 
-        # Generate final mesh
+        # Stage 4: Generate final mesh via FLAME
         expr = torch.zeros(1, 50, device=self.device)
         pose = torch.zeros(1, 6, device=self.device)
         flame_out = self.flame(shape_final, expr, pose)
 
-        # Save outputs
+        # Stage 5: Export
         out_path = Path(output_dir)
         mesh_dir = out_path / "meshes"
         render_dir = out_path / "renders"
