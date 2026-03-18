@@ -234,6 +234,25 @@ def _make_pipeline_cfg():
     })
 
 
+def _all_mocks_ctx(extra=None):
+    """Return a context manager that patches all heavy pipeline deps."""
+    patches = [
+        patch("faceforge.encoder.mica_encoder.MICAEncoder"),
+        patch("faceforge.encoder.multi_image.MultiImageAggregator"),
+        patch("faceforge.model.flame.FLAMELayer"),
+        patch("faceforge.model.renderer.DifferentiableRenderer"),
+        patch("faceforge.optimizer.refiner.ShapeRefiner"),
+        patch("faceforge.utils.landmarks.LandmarkDetector"),
+        patch("faceforge.utils.image.FaceDetector"),
+        patch("faceforge.preprocess.stage.CanonicalPreprocessor"),
+        patch("faceforge.encoder.mica_adapter.MICAAdapter"),
+    ]
+    if extra:
+        patches.extend(extra)
+    from contextlib import ExitStack
+    return ExitStack(), patches
+
+
 def test_pipeline_init_with_mocked_deps():
     """FaceForgePipeline.__init__ with all heavy deps mocked."""
     cfg = _make_pipeline_cfg()
@@ -252,29 +271,43 @@ def test_pipeline_init_with_mocked_deps():
          patch("faceforge.model.renderer.DifferentiableRenderer", return_value=mock_renderer), \
          patch("faceforge.optimizer.refiner.ShapeRefiner", return_value=mock_refiner), \
          patch("faceforge.utils.landmarks.LandmarkDetector", return_value=mock_lmk_det), \
-         patch("faceforge.utils.image.FaceDetector", return_value=mock_face_det):
+         patch("faceforge.utils.image.FaceDetector", return_value=mock_face_det), \
+         patch("faceforge.preprocess.stage.CanonicalPreprocessor"), \
+         patch("faceforge.encoder.mica_adapter.MICAAdapter"):
         from faceforge.pipeline import FaceForgePipeline
         pipeline = FaceForgePipeline(cfg)
         assert pipeline.device.type == "cpu"
         assert pipeline.encoder is mock_encoder
         assert pipeline.flame is mock_flame
+        assert pipeline.preprocessor is not None
+        assert pipeline.mica is not None
 
 
-def test_pipeline_run_no_refine(tmp_path):
-    """FaceForgePipeline.run() with refiner disabled and all deps mocked."""
-    import torch
-    import numpy as np
-    from omegaconf import OmegaConf
-
-    cfg = _make_pipeline_cfg()
-
-    # Mock aggregator result
+def _make_pipeline_run_mocks():
+    """Build mock objects for a no-refine pipeline run."""
     from faceforge.encoder.multi_image import AggregationResult
+    from faceforge.preprocess.stage import PreprocessResult
+    from faceforge.encoder.mica_adapter import MICAResult
+
     mock_agg_result = AggregationResult(
         shape_params=torch.zeros(1, 300),
         per_image_shapes=torch.zeros(1, 300),
         confidence=0.9,
         n_valid_images=1,
+    )
+    preprocess_result = PreprocessResult(
+        original_image=np.zeros((64, 64, 3), dtype=np.uint8),
+        aligned_image=np.zeros((112, 112, 3), dtype=np.uint8),
+        landmarks_68=np.zeros((68, 2), dtype=np.float32),
+        landmarks_5=np.zeros((5, 2), dtype=np.float32),
+        preview_image=np.zeros((112, 112, 3), dtype=np.uint8),
+        metadata={},
+    )
+    mica_result = MICAResult(
+        shape_code=torch.zeros(1, 300),
+        initial_vertices=torch.zeros(1, 5023, 3),
+        initial_faces=torch.zeros(9976, 3, dtype=torch.long),
+        metadata={},
     )
 
     @dataclass
@@ -291,27 +324,219 @@ def test_pipeline_run_no_refine(tmp_path):
         landmarks3d=torch.zeros(1, 68, 3),
     )
 
-    mock_encoder = MagicMock()
     mock_aggregator = MagicMock()
     mock_aggregator.aggregate.return_value = mock_agg_result
     mock_flame = MagicMock()
     mock_flame.return_value = mock_flame_out
-    mock_renderer = MagicMock()
-    mock_refiner = MagicMock()
-    mock_lmk_det = MagicMock()
-    mock_face_det = MagicMock()
+    mock_pre = MagicMock()
+    mock_pre.run.return_value = preprocess_result
+    mock_mica = MagicMock()
+    mock_mica.run.return_value = mica_result
 
-    with patch("faceforge.encoder.mica_encoder.MICAEncoder", return_value=mock_encoder), \
+    return mock_aggregator, mock_flame, mock_pre, mock_mica, mock_agg_result
+
+
+def test_pipeline_run_no_refine(tmp_path):
+    """FaceForgePipeline.run() with refiner disabled and all deps mocked."""
+    cfg = _make_pipeline_cfg()
+    mock_aggregator, mock_flame, mock_pre, mock_mica, mock_agg_result = (
+        _make_pipeline_run_mocks()
+    )
+
+    with patch("faceforge.encoder.mica_encoder.MICAEncoder"), \
          patch("faceforge.encoder.multi_image.MultiImageAggregator", return_value=mock_aggregator), \
          patch("faceforge.model.flame.FLAMELayer", return_value=mock_flame), \
-         patch("faceforge.model.renderer.DifferentiableRenderer", return_value=mock_renderer), \
-         patch("faceforge.optimizer.refiner.ShapeRefiner", return_value=mock_refiner), \
-         patch("faceforge.utils.landmarks.LandmarkDetector", return_value=mock_lmk_det), \
-         patch("faceforge.utils.image.FaceDetector", return_value=mock_face_det):
+         patch("faceforge.model.renderer.DifferentiableRenderer"), \
+         patch("faceforge.optimizer.refiner.ShapeRefiner"), \
+         patch("faceforge.utils.landmarks.LandmarkDetector"), \
+         patch("faceforge.utils.image.FaceDetector"), \
+         patch("faceforge.preprocess.stage.CanonicalPreprocessor", return_value=mock_pre), \
+         patch("faceforge.encoder.mica_adapter.MICAAdapter", return_value=mock_mica):
         from faceforge.pipeline import FaceForgePipeline
         pipeline = FaceForgePipeline(cfg)
         img = np.zeros((64, 64, 3), dtype=np.uint8)
         result = pipeline.run(img, output_dir=str(tmp_path), subject_id="test")
         assert result.shape_params.shape == (300,)
-        assert result.confidence == pytest.approx(0.9)
+        assert result.confidence == pytest.approx(mock_agg_result.confidence)
         assert result.loss_final == pytest.approx(0.0)
+
+# ── New pipeline stage tests (Tasks 9-11) ───────────────────────────────────
+
+def _new_pipeline_cfg():
+    from omegaconf import OmegaConf
+    return OmegaConf.create({
+        "device": "cpu",
+        "paths": {"flame_model": "x", "flame_masks": "y", "mica_weights": "z"},
+        "encoder": {"insightface_name": "buffalo_l", "image_size": 112},
+        "aggregator": {"strategy": "median", "min_confidence": 0.7},
+        "refiner": {
+            "enabled": False, "n_steps": 1, "lr": 1e-3, "render_size": 64,
+            "losses": {
+                "landmark": 1.0, "photometric": 0.0, "identity": 0.0,
+                "contour": 0.0, "region": 0.0, "regularize": 0.1,
+            },
+        },
+        "output": {
+            "save_mesh": False, "save_render": False, "save_params": False,
+            "mesh_format": "ply", "save_intermediates": False,
+        },
+    })
+
+
+def test_pipeline_initializes_preprocessor_and_mica_adapter():
+    from omegaconf import OmegaConf
+
+    cfg = _new_pipeline_cfg()
+
+    with patch("faceforge.preprocess.stage.CanonicalPreprocessor", return_value=MagicMock()) as pre, \
+         patch("faceforge.encoder.mica_adapter.MICAAdapter", return_value=MagicMock()) as mica, \
+         patch("faceforge.encoder.mica_encoder.MICAEncoder"), \
+         patch("faceforge.encoder.multi_image.MultiImageAggregator"), \
+         patch("faceforge.model.flame.FLAMELayer"), \
+         patch("faceforge.model.renderer.DifferentiableRenderer"), \
+         patch("faceforge.optimizer.refiner.ShapeRefiner"), \
+         patch("faceforge.utils.landmarks.LandmarkDetector"), \
+         patch("faceforge.utils.image.FaceDetector"):
+        from faceforge.pipeline import FaceForgePipeline
+        pipeline = FaceForgePipeline(cfg)
+        assert pipeline.preprocessor is pre.return_value
+        assert pipeline.mica is mica.return_value
+
+
+def test_pipeline_run_uses_canonical_preprocess_and_mica(tmp_path):
+    import numpy as np
+    import torch
+    from faceforge.preprocess.stage import PreprocessResult
+    from faceforge.encoder.mica_adapter import MICAResult
+    from faceforge.encoder.multi_image import AggregationResult
+
+    cfg = _new_pipeline_cfg()
+
+    preprocess_result = PreprocessResult(
+        original_image=np.zeros((64, 64, 3), dtype=np.uint8),
+        aligned_image=np.zeros((112, 112, 3), dtype=np.uint8),
+        landmarks_68=np.zeros((68, 2), dtype=np.float32),
+        landmarks_5=np.zeros((5, 2), dtype=np.float32),
+        preview_image=np.zeros((112, 112, 3), dtype=np.uint8),
+        metadata={},
+    )
+    mica_result = MICAResult(
+        shape_code=torch.zeros(1, 300),
+        initial_vertices=torch.zeros(1, 5023, 3),
+        initial_faces=torch.zeros(9976, 3, dtype=torch.long),
+        metadata={},
+    )
+    agg_result = AggregationResult(
+        shape_params=torch.zeros(1, 300),
+        per_image_shapes=torch.zeros(1, 300),
+        confidence=1.0,
+        n_valid_images=1,
+    )
+
+    @dataclass
+    class MockFLAMEOut:
+        vertices: torch.Tensor
+        faces: torch.Tensor
+        landmarks2d: torch.Tensor
+        landmarks3d: torch.Tensor
+
+    flame_out = MockFLAMEOut(
+        vertices=torch.zeros(1, 5023, 3),
+        faces=torch.zeros(9976, 3, dtype=torch.long),
+        landmarks2d=torch.zeros(1, 68, 2),
+        landmarks3d=torch.zeros(1, 68, 3),
+    )
+
+    with patch("faceforge.preprocess.stage.CanonicalPreprocessor") as pre_cls, \
+         patch("faceforge.encoder.mica_adapter.MICAAdapter") as mica_cls, \
+         patch("faceforge.encoder.multi_image.MultiImageAggregator") as agg_cls, \
+         patch("faceforge.encoder.mica_encoder.MICAEncoder"), \
+         patch("faceforge.model.flame.FLAMELayer") as flame_cls, \
+         patch("faceforge.model.renderer.DifferentiableRenderer"), \
+         patch("faceforge.optimizer.refiner.ShapeRefiner"), \
+         patch("faceforge.utils.landmarks.LandmarkDetector"), \
+         patch("faceforge.utils.image.FaceDetector"):
+        pre_cls.return_value.run.return_value = preprocess_result
+        mica_cls.return_value.run.return_value = mica_result
+        agg_cls.return_value.aggregate.return_value = agg_result
+        flame_cls.return_value.return_value = flame_out
+
+        from faceforge.pipeline import FaceForgePipeline
+        pipeline = FaceForgePipeline(cfg)
+        pipeline.run(np.zeros((64, 64, 3), dtype=np.uint8), output_dir=str(tmp_path))
+
+        pre_cls.return_value.run.assert_called()
+        mica_cls.return_value.run.assert_called()
+
+
+def test_pipeline_multi_image_aggregates_mica_shape_codes(tmp_path):
+    """Two images → preprocessor and MICA adapter called twice each; aggregator once."""
+    import numpy as np
+    import torch
+    from faceforge.preprocess.stage import PreprocessResult
+    from faceforge.encoder.mica_adapter import MICAResult
+    from faceforge.encoder.multi_image import AggregationResult
+
+    cfg = _new_pipeline_cfg()
+
+    preprocess_result = PreprocessResult(
+        original_image=np.zeros((64, 64, 3), dtype=np.uint8),
+        aligned_image=np.zeros((112, 112, 3), dtype=np.uint8),
+        landmarks_68=np.zeros((68, 2), dtype=np.float32),
+        landmarks_5=np.zeros((5, 2), dtype=np.float32),
+        preview_image=np.zeros((112, 112, 3), dtype=np.uint8),
+        metadata={},
+    )
+    mica_result = MICAResult(
+        shape_code=torch.zeros(1, 300),
+        initial_vertices=torch.zeros(1, 5023, 3),
+        initial_faces=torch.zeros(9976, 3, dtype=torch.long),
+        metadata={},
+    )
+    agg_result = AggregationResult(
+        shape_params=torch.zeros(1, 300),
+        per_image_shapes=torch.zeros(2, 300),
+        confidence=1.0,
+        n_valid_images=2,
+    )
+
+    @dataclass
+    class MockFLAMEOut:
+        vertices: torch.Tensor
+        faces: torch.Tensor
+        landmarks2d: torch.Tensor
+        landmarks3d: torch.Tensor
+
+    flame_out = MockFLAMEOut(
+        vertices=torch.zeros(1, 5023, 3),
+        faces=torch.zeros(9976, 3, dtype=torch.long),
+        landmarks2d=torch.zeros(1, 68, 2),
+        landmarks3d=torch.zeros(1, 68, 3),
+    )
+
+    with patch("faceforge.preprocess.stage.CanonicalPreprocessor") as pre_cls, \
+         patch("faceforge.encoder.mica_adapter.MICAAdapter") as mica_cls, \
+         patch("faceforge.encoder.multi_image.MultiImageAggregator") as agg_cls, \
+         patch("faceforge.encoder.mica_encoder.MICAEncoder"), \
+         patch("faceforge.model.flame.FLAMELayer") as flame_cls, \
+         patch("faceforge.model.renderer.DifferentiableRenderer"), \
+         patch("faceforge.optimizer.refiner.ShapeRefiner"), \
+         patch("faceforge.utils.landmarks.LandmarkDetector"), \
+         patch("faceforge.utils.image.FaceDetector"):
+        pre_cls.return_value.run.return_value = preprocess_result
+        mica_cls.return_value.run.return_value = mica_result
+        agg_cls.return_value.aggregate.return_value = agg_result
+        flame_cls.return_value.return_value = flame_out
+
+        from faceforge.pipeline import FaceForgePipeline
+        pipeline = FaceForgePipeline(cfg)
+        images = [
+            np.zeros((64, 64, 3), dtype=np.uint8),
+            np.zeros((64, 64, 3), dtype=np.uint8),
+        ]
+        pipeline.run(images, output_dir=str(tmp_path), subject_id="subj")
+
+        # MICA adapter called once per image
+        assert mica_cls.return_value.run.call_count == 2
+        # Aggregator called exactly once with the stacked shape codes
+        agg_cls.return_value.aggregate.assert_called_once()
