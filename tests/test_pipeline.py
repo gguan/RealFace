@@ -161,3 +161,39 @@ def test_refiner_best_shape_returned():
     # Result should be a valid tensor, not the original init
     assert result.shape_params.shape == (1, 300)
     assert isinstance(result.shape_params, torch.Tensor)
+
+
+def test_pipeline_result_dataclass():
+    from faceforge.pipeline import PipelineResult
+    r = PipelineResult(
+        mesh_path="output/subject.ply",
+        render_path="",
+        params_path="output/subject_shape.npy",
+        shape_params=np.zeros(300),
+        confidence=0.95,
+        loss_final=0.123,
+    )
+    assert r.shape_params.shape == (300,)
+    assert r.confidence == 0.95
+    assert r.loss_final == pytest.approx(0.123)
+
+
+def test_pipeline_from_config_classmethod_exists():
+    from faceforge.pipeline import FaceForgePipeline
+    assert hasattr(FaceForgePipeline, "from_config")
+    assert callable(FaceForgePipeline.from_config)
+
+
+def test_cli_importable():
+    from faceforge.cli import app
+    assert app is not None
+
+
+def test_cli_help(tmp_path):
+    """CLI --help must not crash."""
+    from typer.testing import CliRunner
+    from faceforge.cli import app
+    runner = CliRunner()
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "reconstruct" in result.output.lower() or "3d" in result.output.lower()
