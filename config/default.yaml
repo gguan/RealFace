@@ -27,7 +27,8 @@ refiner:
     regularize:  0.1
 
 output:
-  save_mesh:   true
-  save_render: true
-  save_params: true
-  mesh_format: ply           # ply | obj
+  save_mesh:          true
+  save_render:        true
+  save_params:        true
+  mesh_format:        ply    # ply | obj
+  save_intermediates: false  # save per-stage debug artifacts

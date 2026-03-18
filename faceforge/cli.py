@@ -19,6 +19,8 @@ def reconstruct(
         help="Config YAML path"),
     no_refine: bool = typer.Option(False, "--no-refine",
         help="Skip differentiable refinement (fast mode, MICA output only)"),
+    save_intermediates: bool = typer.Option(False, "--save-intermediates",
+        help="Save per-stage intermediate artifacts (aligned crops, mesh previews, etc.)"),
     verbose: bool = typer.Option(False, "--verbose", "-v",
         help="Print optimization progress"),
 ):
@@ -37,6 +39,8 @@ def reconstruct(
     # Apply CLI overrides
     if no_refine:
         cfg.refiner.enabled = False
+    if save_intermediates:
+        cfg.output.save_intermediates = True
 
     logger.info(f"[CLI] Input: {[str(p) for p in input]}")
     logger.info(f"[CLI] Output: {output} | Subject: {subject}")

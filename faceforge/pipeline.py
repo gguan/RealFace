@@ -97,6 +97,7 @@ class FaceForgePipeline:
         from pathlib import Path
         from faceforge.utils.image import load_image
         from faceforge.utils.mesh_io import save_mesh
+        from faceforge.utils.artifacts import ArtifactWriter
 
         # Normalize to list
         if not isinstance(images, list):
@@ -109,11 +110,24 @@ class FaceForgePipeline:
             f"[Pipeline] Processing {len(loaded)} image(s) for subject '{subject_id}'"
         )
 
+        # Artifact writer (no-op when save_intermediates=False)
+        save_intermediates = bool(
+            getattr(self.config.output, "save_intermediates", False)
+        )
+        artifacts = ArtifactWriter(output_dir, subject_id, enabled=save_intermediates)
+        artifacts.ensure_stage_dirs()
+
         # Stage 1: Canonical preprocessing + MICA encoding per image
         all_shape_codes = []
         for i, img in enumerate(loaded):
+            artifacts.save_input(img, name=f"input_{i:03d}.png")
             pre_result = self.preprocessor.run(img)
+            artifacts.save_aligned(pre_result.aligned_image, name=f"aligned_{i:03d}.png")
+            artifacts.save_landmark_preview(pre_result.preview_image, name=f"landmarks_{i:03d}.png")
             mica_result = self.mica.run(pre_result)
+            artifacts.save_mica_preview(
+                pre_result.aligned_image, name=f"mica_preview_{i:03d}.png"
+            )
             all_shape_codes.append(mica_result.shape_code)
 
         # Stage 2: Multi-image aggregation — pass pre-computed (N, 300) tensor
