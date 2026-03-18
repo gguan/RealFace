@@ -78,3 +78,76 @@ def test_flame_nonzero_shape_changes_vertices(flame_layer):
     out = flame_layer(shape, expr, pose)
     assert out.vertices.shape == (1, 5023, 3)
     assert not out.vertices.isnan().any()
+
+
+def test_flame_load_from_synthetic_pkl(tmp_path):
+    """Cover _load_from_file by creating a minimal synthetic FLAME pkl."""
+    import pickle
+    import numpy as np
+    import torch
+    from faceforge.model.flame import FLAMELayer
+
+    V = 5023
+    F = 9976
+    J = 5
+
+    flame_data = {
+        "v_template": np.zeros((V, 3), dtype=np.float32),
+        # shapedirs with >=400 last dim so branch splits into shape+expr
+        "shapedirs": np.zeros((V, 3, 400), dtype=np.float32),
+        "posedirs": np.zeros((V * 3, 9 * (J - 1)), dtype=np.float32),
+        "f": np.zeros((F, 3), dtype=np.int64),
+        "J_regressor": np.zeros((J, V), dtype=np.float32),
+        "weights": np.zeros((V, J), dtype=np.float32),
+        "kintree_table": np.zeros((2, J), dtype=np.int64),
+    }
+
+    pkl_path = str(tmp_path / "flame.pkl")
+    with open(pkl_path, "wb") as f:
+        pickle.dump(flame_data, f)
+
+    layer = FLAMELayer(pkl_path, device=torch.device("cpu"))
+
+    # Check that buffers are loaded correctly
+    assert layer.v_template.shape == (V, 3)
+    assert layer.shape_dirs.shape == (V, 3, 300)
+    assert layer.expr_dirs.shape == (V, 3, 50)
+    assert layer.faces.shape == (F, 3)
+
+    # Forward pass should work
+    shape = torch.zeros(1, 300)
+    expr = torch.zeros(1, 50)
+    pose = torch.zeros(1, 6)
+    out = layer(shape, expr, pose)
+    assert out.vertices.shape == (1, V, 3)
+
+
+def test_flame_load_with_separate_exprdirs(tmp_path):
+    """Cover the else branch: shapedirs < 400 dims, uses exprdirs key."""
+    import pickle
+    import numpy as np
+    import torch
+    from faceforge.model.flame import FLAMELayer
+
+    V = 5023
+    F = 9976
+    J = 5
+
+    flame_data = {
+        "v_template": np.zeros((V, 3), dtype=np.float32),
+        "shapedirs": np.zeros((V, 3, 200), dtype=np.float32),  # < 400
+        "exprdirs": np.zeros((V, 3, 50), dtype=np.float32),
+        "posedirs": np.zeros((V * 3, 9 * (J - 1)), dtype=np.float32),
+        "f": np.zeros((F, 3), dtype=np.int64),
+        "J_regressor": np.zeros((J, V), dtype=np.float32),
+        "weights": np.zeros((V, J), dtype=np.float32),
+        "kintree_table": np.zeros((2, J), dtype=np.int64),
+    }
+
+    pkl_path = str(tmp_path / "flame2.pkl")
+    with open(pkl_path, "wb") as f:
+        pickle.dump(flame_data, f)
+
+    layer = FLAMELayer(pkl_path, device=torch.device("cpu"))
+    assert layer.shape_dirs.shape == (V, 3, 200)
+    assert layer.expr_dirs.shape == (V, 3, 50)

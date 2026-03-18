@@ -197,3 +197,121 @@ def test_cli_help(tmp_path):
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "reconstruct" in result.output.lower() or "3d" in result.output.lower()
+
+
+def test_faceforge_getattr_invalid():
+    """faceforge.__getattr__ should raise AttributeError for unknown names."""
+    import faceforge
+    with pytest.raises(AttributeError):
+        _ = faceforge.NonExistentThing
+
+
+def _make_pipeline_cfg():
+    from omegaconf import OmegaConf
+    return OmegaConf.create({
+        "device": "cpu",
+        "paths": {
+            "flame_model": "nonexistent.pkl",
+            "flame_masks": "nonexistent.pkl",
+            "mica_weights": "nonexistent.tar",
+        },
+        "encoder": {"insightface_name": "buffalo_l", "image_size": 112},
+        "aggregator": {"strategy": "median", "min_confidence": 0.7},
+        "refiner": {
+            "enabled": False,
+            "n_steps": 10,
+            "lr": 0.001,
+            "render_size": 64,
+            "losses": {
+                "landmark": 1.0, "photometric": 0.5, "identity": 0.3,
+                "contour": 0.5, "region": 0.8, "regularize": 0.1,
+            },
+        },
+        "output": {
+            "save_mesh": False, "save_render": False,
+            "save_params": False, "mesh_format": "ply",
+        },
+    })
+
+
+def test_pipeline_init_with_mocked_deps():
+    """FaceForgePipeline.__init__ with all heavy deps mocked."""
+    cfg = _make_pipeline_cfg()
+
+    mock_encoder = MagicMock()
+    mock_aggregator = MagicMock()
+    mock_flame = MagicMock()
+    mock_renderer = MagicMock()
+    mock_refiner = MagicMock()
+    mock_lmk_det = MagicMock()
+    mock_face_det = MagicMock()
+
+    with patch("faceforge.encoder.mica_encoder.MICAEncoder", return_value=mock_encoder), \
+         patch("faceforge.encoder.multi_image.MultiImageAggregator", return_value=mock_aggregator), \
+         patch("faceforge.model.flame.FLAMELayer", return_value=mock_flame), \
+         patch("faceforge.model.renderer.DifferentiableRenderer", return_value=mock_renderer), \
+         patch("faceforge.optimizer.refiner.ShapeRefiner", return_value=mock_refiner), \
+         patch("faceforge.utils.landmarks.LandmarkDetector", return_value=mock_lmk_det), \
+         patch("faceforge.utils.image.FaceDetector", return_value=mock_face_det):
+        from faceforge.pipeline import FaceForgePipeline
+        pipeline = FaceForgePipeline(cfg)
+        assert pipeline.device.type == "cpu"
+        assert pipeline.encoder is mock_encoder
+        assert pipeline.flame is mock_flame
+
+
+def test_pipeline_run_no_refine(tmp_path):
+    """FaceForgePipeline.run() with refiner disabled and all deps mocked."""
+    import torch
+    import numpy as np
+    from omegaconf import OmegaConf
+
+    cfg = _make_pipeline_cfg()
+
+    # Mock aggregator result
+    from faceforge.encoder.multi_image import AggregationResult
+    mock_agg_result = AggregationResult(
+        shape_params=torch.zeros(1, 300),
+        per_image_shapes=torch.zeros(1, 300),
+        confidence=0.9,
+        n_valid_images=1,
+    )
+
+    @dataclass
+    class MockFLAMEOut:
+        vertices: torch.Tensor
+        faces: torch.Tensor
+        landmarks2d: torch.Tensor
+        landmarks3d: torch.Tensor
+
+    mock_flame_out = MockFLAMEOut(
+        vertices=torch.zeros(1, 5023, 3),
+        faces=torch.zeros(9976, 3, dtype=torch.long),
+        landmarks2d=torch.zeros(1, 68, 2),
+        landmarks3d=torch.zeros(1, 68, 3),
+    )
+
+    mock_encoder = MagicMock()
+    mock_aggregator = MagicMock()
+    mock_aggregator.aggregate.return_value = mock_agg_result
+    mock_flame = MagicMock()
+    mock_flame.return_value = mock_flame_out
+    mock_renderer = MagicMock()
+    mock_refiner = MagicMock()
+    mock_lmk_det = MagicMock()
+    mock_face_det = MagicMock()
+
+    with patch("faceforge.encoder.mica_encoder.MICAEncoder", return_value=mock_encoder), \
+         patch("faceforge.encoder.multi_image.MultiImageAggregator", return_value=mock_aggregator), \
+         patch("faceforge.model.flame.FLAMELayer", return_value=mock_flame), \
+         patch("faceforge.model.renderer.DifferentiableRenderer", return_value=mock_renderer), \
+         patch("faceforge.optimizer.refiner.ShapeRefiner", return_value=mock_refiner), \
+         patch("faceforge.utils.landmarks.LandmarkDetector", return_value=mock_lmk_det), \
+         patch("faceforge.utils.image.FaceDetector", return_value=mock_face_det):
+        from faceforge.pipeline import FaceForgePipeline
+        pipeline = FaceForgePipeline(cfg)
+        img = np.zeros((64, 64, 3), dtype=np.uint8)
+        result = pipeline.run(img, output_dir=str(tmp_path), subject_id="test")
+        assert result.shape_params.shape == (300,)
+        assert result.confidence == pytest.approx(0.9)
+        assert result.loss_final == pytest.approx(0.0)
