@@ -82,18 +82,19 @@ class ShapeRefiner:
         # Detect landmarks from input image
         img_np = (image[0].detach().cpu().numpy() * 255).clip(0, 255).astype("uint8")
         try:
-            target_lmk = torch.from_numpy(
+            target_lmk_raw = torch.from_numpy(
                 self.lmk_detector.detect(img_np, normalize=True)
-            ).unsqueeze(0).to(self.device)  # (1, 68, 2)
+            ).unsqueeze(0).to(self.device)  # (1, 68, 2) in [0,1]
+            target_lmk = target_lmk_raw * 2.0 - 1.0  # map to [-1,1]
         except Exception as e:
             logger.warning(f"[ShapeRefiner] Landmark detection failed: {e}. Using zeros.")
-            target_lmk = torch.zeros(1, 68, 2, device=self.device)
+            target_lmk = torch.zeros(1, 68, 2, device=self.device)  # zeros is in [-1,1]
 
         # Face mask from detector
         try:
-            faces = self.face_detector._app.get(img_np)
-            if faces:
-                face_mask = self._build_face_mask(faces[0], image.shape[1:3])
+            detection = self.face_detector.detect(img_np)
+            if detection is not None:
+                face_mask = self._build_face_mask(detection, image.shape[1:3])
             else:
                 face_mask = torch.ones(1, image.shape[1], image.shape[2], device=self.device)
         except Exception:
@@ -113,6 +114,7 @@ class ShapeRefiner:
         loss_history = []
         best_loss = float("inf")
         best_shape = shape_init.clone()
+        best_flame_output = None
         ref_vertices = None
 
         for step in range(n_steps):
@@ -125,13 +127,13 @@ class ShapeRefiner:
             if ref_vertices is None:
                 ref_vertices = flame_out.vertices.detach().clone()
 
-            loss = torch.tensor(0.0, device=self.device)
+            loss = torch.zeros(1, device=self.device, requires_grad=True)
 
             # 1. Landmark loss
             if self.lw.landmark > 0:
                 proj_lmk = self.renderer.project_points(flame_out.landmarks3d, cameras)
-                # Normalize projected landmarks to [0,1] range
-                proj_lmk_norm = (proj_lmk / self.renderer.image_size).clamp(0, 1)
+                # Normalize projected pixel coords to [-1, 1]
+                proj_lmk_norm = (proj_lmk / self.renderer.image_size) * 2.0 - 1.0
                 loss = loss + self.lw.landmark * landmark_loss(proj_lmk_norm, target_lmk)
 
             # 2. Photometric loss
@@ -163,7 +165,8 @@ class ShapeRefiner:
             if self.lw.regularize > 0:
                 loss = loss + self.lw.regularize * shape_regularizer(shape, shape_init)
 
-            loss.backward()
+            if loss.requires_grad:
+                loss.backward()
             optimizer.step()
             scheduler.step()
 
@@ -173,6 +176,7 @@ class ShapeRefiner:
             if loss_val < best_loss:
                 best_loss = loss_val
                 best_shape = shape.detach().clone()
+                best_flame_output = flame_out  # track the output at best step
 
             if verbose and step % 10 == 0:
                 logger.info(f"  step {step:3d} | loss {loss_val:.4f}")
@@ -180,16 +184,15 @@ class ShapeRefiner:
         return RefineResult(
             shape_params=best_shape,
             loss_history=loss_history,
-            flame_output=flame_out,
+            flame_output=best_flame_output,
             n_steps_done=n_steps,
         )
 
-    def _build_face_mask(self, face, image_hw):
-        """Build a binary face mask from InsightFace detection bbox."""
-        import numpy as np
+    def _build_face_mask(self, detection: dict, image_hw: tuple) -> torch.Tensor:
+        """Build binary face mask from InsightFace detection bbox dict."""
         H, W = image_hw
         mask = torch.zeros(1, H, W, device=self.device)
-        bbox = face.bbox.astype(int)
-        x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(W, bbox[2]), min(H, bbox[3])
+        bbox = detection["bbox"]
+        x1, y1, x2, y2 = int(max(0, bbox[0])), int(max(0, bbox[1])), int(min(W, bbox[2])), int(min(H, bbox[3]))
         mask[0, y1:y2, x1:x2] = 1.0
         return mask
