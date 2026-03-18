@@ -2,7 +2,7 @@
 MICA encoder: maps face images to FLAME identity shape coefficients.
 
 Internal flow:
-  image → InsightFace buffalo_l (ArcFace) → 512-dim embedding
+  image → InsightFace antelopev2 (ArcFace) → 512-dim embedding
   → MappingNetwork → FLAME shape coefficients (1, 300)
 """
 
@@ -44,19 +44,21 @@ class MICAEncoder:
 
     def __init__(
         self,
-        mica_weights_path: str,   # data/pretrained/mica.tar
-        flame_model_path: str,    # data/pretrained/FLAME2020/ (dir, not used here)
+        mica_weights_path: str,          # data/pretrained/mica.tar
+        flame_model_path: str,           # data/pretrained/FLAME2020/ (dir, not used here)
         device=None,
+        insightface_name: str = "antelopev2",
     ):
         """
         Load:
-        1. InsightFace buffalo_l (ArcFace feature extraction)
+        1. InsightFace antelopev2 (ArcFace feature extraction)
         2. MICA mapping network (ArcFace feat → shape coefficients)
         """
         from faceforge.utils.device import get_device
 
         self.device = device or get_device()
         self._image_size = 112
+        self._insightface_name = insightface_name
 
         # Setup mapping network
         self._mapping = MappingNetwork().to(self.device)
@@ -103,11 +105,11 @@ class MICAEncoder:
             logger.warning(f"[MICAEncoder] Failed to load weights: {e}")
 
     def _setup_detector(self):
-        """Initialize InsightFace buffalo_l for ArcFace feature extraction."""
+        """Initialize InsightFace model for ArcFace feature extraction."""
         import insightface
 
         app = insightface.app.FaceAnalysis(
-            name="buffalo_l",
+            name=self._insightface_name,
             providers=["CPUExecutionProvider"],
         )
         app.prepare(ctx_id=0, det_size=(224, 224))
